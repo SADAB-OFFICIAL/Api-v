@@ -17,13 +17,17 @@ export async function GET() {
       const poster = $(element).find("figure img").attr("src");
       const link = $(element).find(".entry-title a").attr("href");
       
-      if (title && link) {
-        movies.push({ title, poster, link });
+      if (title && link && poster) {
+        // Create clean slug
+        const slugPart = link.replace(SOURCE_DOMAIN, "").replace(/\//g, "");
+        const fullSlug = btoa(`${slugPart}|||${SOURCE_DOMAIN}`); // Base64 Encode
+
+        movies.push({ title, poster, slug: fullSlug });
       }
     });
 
-    return NextResponse.json({ status: true, data: movies });
-  } catch (error: any) {
-    return NextResponse.json({ status: false, error: error.message }, { status: 500 });
+    return NextResponse.json(movies);
+  } catch (error) {
+    return NextResponse.json({ error: "Failed to fetch home" }, { status: 500 });
   }
 }
