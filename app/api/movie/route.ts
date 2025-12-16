@@ -5,11 +5,15 @@ const PROXY_BASE = "https://proxy.vlyx.workers.dev/?url=";
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const targetUrl = searchParams.get("url");
+  const slug = searchParams.get("slug");
 
-  if (!targetUrl) return NextResponse.json({ status: false, error: "Missing URL" });
+  if (!slug) return NextResponse.json({ error: "Missing Slug" }, { status: 400 });
 
   try {
+    const decoded = atob(slug);
+    const [path, baseUrl] = decoded.split("|||");
+    const targetUrl = `${baseUrl}/${path}/`;
+
     const res = await fetch(`${PROXY_BASE}${targetUrl}`, { cache: "no-store" });
     const html = await res.text();
     const $ = cheerio.load(html);
@@ -25,34 +29,41 @@ export async function GET(request: Request) {
       const label = $(elem).text().trim();
       const linkDiv = $(elem).next(".downloads-btns-div");
       
-      // Normal Links (Single Movie / Episode)
+      const resMatch = label.match(/(\d{3,4}p)/);
+      const res = resMatch ? resMatch[0] : "HD";
+      const isHEVC = label.toLowerCase().includes("hevc");
+      
+      // Normal Links
       const normalBtn = linkDiv.find("a.btn:not(.btn-zip)").attr("href");
       if (normalBtn) {
-        episodeLinks.push({ label, url: normalBtn });
+         const sizeMatch = label.match(/\[(\d+(\.\d+)?[GM]B)(\/E)?\]/);
+         episodeLinks.push({ 
+             label, res, isHEVC, 
+             size: sizeMatch ? sizeMatch[1] : "N/A",
+             url: normalBtn 
+         });
       }
 
-      // Zip Links (Batch/Series)
+      // Zip Links
       const zipBtn = linkDiv.find("a.btn-zip").attr("href");
       if (zipBtn) {
-        batchLinks.push({ label, url: zipBtn });
+         const zipText = linkDiv.find("a.btn-zip").text();
+         const sizeMatch = zipText.match(/\[(\d+(\.\d+)?[GM]B)\]/);
+         batchLinks.push({ 
+             label: label.replace("Episode", "Season"), res, isHEVC,
+             size: sizeMatch ? sizeMatch[1] : "Zip",
+             url: zipBtn 
+         });
       }
     });
 
     const isSeries = batchLinks.length > 0 || title.includes("Season");
 
     return NextResponse.json({
-      status: true,
-      data: {
-        title,
-        poster,
-        description,
-        isSeries,
-        episodeLinks,
-        batchLinks
-      }
+        title, poster, description, isSeries, episodeLinks, batchLinks
     });
 
-  } catch (error: any) {
-    return NextResponse.json({ status: false, error: error.message }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json({ error: "Failed to fetch movie" }, { status: 500 });
   }
 }
