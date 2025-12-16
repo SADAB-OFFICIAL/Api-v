@@ -5,37 +5,37 @@ const PROXY_BASE = "https://proxy.vlyx.workers.dev/?url=";
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const m4uLink = searchParams.get("url");
+  const url = searchParams.get("url"); // m4ulinks URL
 
-  if (!m4uLink) return NextResponse.json({ status: false, error: "Missing URL" });
+  if (!url) return NextResponse.json({ error: "Missing URL" }, { status: 400 });
 
   try {
-    const res = await fetch(`${PROXY_BASE}${m4uLink}`, { cache: "no-store" });
+    const res = await fetch(`${PROXY_BASE}${url}`, { cache: "no-store" });
     const html = await res.text();
     const $ = cheerio.load(html);
 
     const episodes: any[] = [];
+    const title = $("h1").text().replace("Always Use Official Website", "").trim();
 
-    // M4uLinks Page Structure Parsing
     $(".download-links-div h5").each((_, elem) => {
       const epTitle = $(elem).text().trim(); // "-:Episodes: 1:-"
+      const epNum = epTitle.match(/\d+/)?.[0] || "?";
       const btnDiv = $(elem).next(".downloads-btns-div");
       
       const hubCloudLink = btnDiv.find("a[href*='hubcloud']").attr("href");
-      const gdFlixLink = btnDiv.find("a[href*='gdflix']").attr("href");
 
-      if (hubCloudLink || gdFlixLink) {
+      if (hubCloudLink) {
         episodes.push({
-          title: epTitle.replace(/-:|:-/g, "").trim(),
-          hubCloud: hubCloudLink,
-          gdFlix: gdFlixLink
+          epNum,
+          title: `Episode ${epNum}`,
+          url: hubCloudLink
         });
       }
     });
 
-    return NextResponse.json({ status: true, data: episodes });
+    return NextResponse.json({ title, episodes });
 
-  } catch (error: any) {
-    return NextResponse.json({ status: false, error: error.message }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json({ error: "Failed" }, { status: 500 });
   }
 }
