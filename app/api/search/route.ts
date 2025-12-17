@@ -43,6 +43,7 @@ export async function GET(request: Request) {
     const title = $("h1").text().replace("Always Use Official Website", "").trim();
 
     // --- STRATEGY 1: MDrive (h5 Headers) ---
+    // MoviesDrive structure: <h5>Ep01...</h5> <h5><a href="hubcloud">HubCloud</a></h5>
     if (targetUrl.includes("mdrive") || targetUrl.includes("moviesdrive")) {
         let currentEpNum = "";
         
@@ -57,7 +58,7 @@ export async function GET(request: Request) {
                 if (match) currentEpNum = match[1];
             }
 
-            // 2. Detect HubCloud Link
+            // 2. Detect HubCloud Link associated with current episode
             if (href && (text.includes("HubCloud") || href.includes("hubcloud")) && currentEpNum) {
                 episodes.push({
                     epNum: currentEpNum,
@@ -70,6 +71,7 @@ export async function GET(request: Request) {
     }
 
     // --- STRATEGY 2: M4uLinks (h5 + div) ---
+    // M4uLinks structure: <h5>-:Episodes: 1:-</h5> <div class="downloads-btns-div">...</div>
     else {
         $(".download-links-div h5").each((_, elem) => {
             const epTitle = $(elem).text().trim(); // e.g. "-:Episodes: 1:-"
