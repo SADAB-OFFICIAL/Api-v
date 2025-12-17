@@ -1,52 +1,104 @@
 import { NextResponse } from "next/server";
 import * as cheerio from "cheerio";
-import { fetchProxy, SOURCE_DOMAIN, encodeBase64, parseHTML } from "@/lib/utils";
+import { fetchProxy, parseHTML, encodeBase64, decodeBase64 } from "@/lib/utils";
 
-// Clean Title Helper
-const cleanTitle = (raw: string) => raw.replace(/\(\d{4}\).*/, "").trim();
+// Helper to safely parse key
+const getUrlFromKey = (key: string) => {
+  try {
+    const decodedStr = decodeBase64(key);
+    // Try parsing as JSON first
+    if (decodedStr.trim().startsWith("{")) {
+        const json = JSON.parse(decodedStr);
+        return json.link || json.url;
+    }
+    // If not JSON, return string as is
+    return decodedStr;
+  } catch (e) {
+    return null;
+  }
+};
+
+const generateSlug = (url: string) => encodeBase64(JSON.stringify({ url }));
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const query = searchParams.get("query");
+  const key = searchParams.get("key");
+  const directUrl = searchParams.get("url"); 
+  
+  let targetUrl = "";
+  if (key) targetUrl = getUrlFromKey(key);
+  else if (directUrl) targetUrl = directUrl;
 
-  if (!query) return NextResponse.json({ error: "Missing Query" }, { status: 400 });
+  if (!targetUrl) return NextResponse.json({ error: "Missing Key" }, { status: 400 });
 
   try {
-    // MoviesDrive Search URL Pattern: https://moviesdrive.pics/?s=iron+man
-    const targetUrl = `${SOURCE_DOMAIN}/?s=${encodeURIComponent(query)}`;
+    // ⚡ 12 Hours Cache
+    const html = await fetchProxy(targetUrl, { next: { revalidate: 43200 } }); 
+    if (!html) throw new Error("Failed to fetch page");
+
+    const $ = parseHTML(html);
+    const episodes: any[] = [];
     
-    // No Cache for search (Realtime results)
-    const html = await fetchProxy(targetUrl, { cache: "no-store" });
-    
-    if (!html) return NextResponse.json({ error: "Search Failed" }, { status: 503 });
+    // Title Cleaning
+    const title = $("h1").text().replace("Always Use Official Website", "").trim();
 
-    const $ = cheerio.load(html);
-    const results: any[] = [];
+    // --- STRATEGY 1: MDrive (h5 Headers) ---
+    if (targetUrl.includes("mdrive") || targetUrl.includes("moviesdrive")) {
+        let currentEpNum = "";
+        
+        $("h5").each((_, elem) => {
+            const text = $(elem).text().trim();
+            const linkTag = $(elem).find("a");
+            const href = linkTag.attr("href");
 
-    // Same selector logic as Home Page
-    $("article.post").each((_, element) => {
-      const titleTag = $(element).find(".entry-title a");
-      const imgTag = $(element).find("figure img");
-      
-      if (titleTag && imgTag) {
-        const rawTitle = titleTag.text().trim();
-        const poster = imgTag.attr("src");
-        const link = titleTag.attr("href");
+            // 1. Detect Episode Number (e.g. "Ep01 - 2160p")
+            if (text.match(/Ep\s?\d+/i)) {
+                const match = text.match(/Ep\s?(\d+)/i);
+                if (match) currentEpNum = match[1];
+            }
 
-        if (link) {
-            const slugPart = link.replace(SOURCE_DOMAIN, "").replace(/\//g, "");
-            const fullSlug = `${slugPart}|||${SOURCE_DOMAIN}`;
+            // 2. Detect HubCloud Link
+            if (href && (text.includes("HubCloud") || href.includes("hubcloud")) && currentEpNum) {
+                episodes.push({
+                    epNum: currentEpNum,
+                    title: `Episode ${currentEpNum}`,
+                    url: href,
+                    slug: generateSlug(href)
+                });
+            }
+        });
+    }
+
+    // --- STRATEGY 2: M4uLinks (h5 + div) ---
+    else {
+        $(".download-links-div h5").each((_, elem) => {
+            const epTitle = $(elem).text().trim(); // e.g. "-:Episodes: 1:-"
+            const epNum = epTitle.match(/\d+/)?.[0] || "?";
+            const btnDiv = $(elem).next(".downloads-btns-div");
             
-            results.push({ 
-                title: cleanTitle(rawTitle), 
-                poster, 
-                slug: encodeBase64(fullSlug)
-            });
-        }
-      }
-    });
+            // Extract HubCloud Link
+            let hubCloudLink = btnDiv.find("a[href*='hubcloud']").attr("href");
+            
+            // Fallback for messy HTML
+            if(!hubCloudLink) hubCloudLink = $(elem).find("a[href*='hubcloud']").attr("href");
 
-    return NextResponse.json({ status: true, data: results });
+            if (hubCloudLink) {
+                episodes.push({
+                    epNum,
+                    title: `Episode ${epNum}`,
+                    url: hubCloudLink,
+                    slug: generateSlug(hubCloudLink)
+                });
+            }
+        });
+    }
+
+    return NextResponse.json({ 
+        status: true, 
+        title, 
+        total: episodes.length,
+        episodes 
+    }, { headers: { 'Cache-Control': 'public, s-maxage=43200' } });
 
   } catch (error: any) {
     return NextResponse.json({ status: false, error: error.message }, { status: 500 });
