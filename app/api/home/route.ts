@@ -1,28 +1,33 @@
 import { NextResponse } from "next/server";
 import * as cheerio from "cheerio";
+import { fetchProxy, SOURCE_DOMAIN, encodeBase64 } from "@/lib/utils";
 
-const PROXY_BASE = "https://proxy.vlyx.workers.dev/?url=";
-const SOURCE_DOMAIN = "https://movies4u.nexus";
+const cleanTitle = (raw: string) => raw.split(/HQ|HDTC|Dual Audio|480p|720p|1080p|WEB-DL/i)[0].trim();
 
 export async function GET() {
   try {
-    const res = await fetch(`${PROXY_BASE}${SOURCE_DOMAIN}`, { cache: "no-store" });
-    const html = await res.text();
-    const $ = cheerio.load(html);
+    // fetchProxy ab khud JSON/HTML handle karega from lib/utils
+    const html = await fetchProxy(SOURCE_DOMAIN);
+    if (!html) throw new Error("Failed to load source");
 
+    const $ = cheerio.load(html);
     const movies: any[] = [];
 
     $("article.post").each((_, element) => {
-      const title = $(element).find(".entry-title a").text().trim();
+      const rawTitle = $(element).find(".entry-title a").text().trim();
       const poster = $(element).find("figure img").attr("src");
       const link = $(element).find(".entry-title a").attr("href");
       
-      if (title && link && poster) {
-        // Create clean slug
+      if (rawTitle && link && poster) {
         const slugPart = link.replace(SOURCE_DOMAIN, "").replace(/\//g, "");
-        const fullSlug = btoa(`${slugPart}|||${SOURCE_DOMAIN}`); // Base64 Encode
-
-        movies.push({ title, poster, slug: fullSlug });
+        // Format: slug|||source_domain
+        const fullSlug = `${slugPart}|||${SOURCE_DOMAIN}`;
+        
+        movies.push({ 
+            title: cleanTitle(rawTitle), 
+            poster, 
+            slug: encodeBase64(fullSlug) // Encode here
+        });
       }
     });
 
