@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import * as cheerio from "cheerio";
-import { fetchProxy, decodeBase64 } from "@/lib/utils";
+import { fetchProxy, decodeBase64, parseHTML, encodeBase64 } from "@/lib/utils";
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -11,21 +10,14 @@ export async function GET(request: Request) {
 
   try {
     const decoded = JSON.parse(decodeBase64(key));
-    const m4uLink = decoded.link;
-
-    const html = await fetchProxy(m4uLink);
-    if (!html) throw new Error("Failed");
-
-    const $ = cheerio.load(html);
+    const html = await fetchProxy(decoded.link, 0); // 0 = No Cache
+    const $ = parseHTML(html || "");
+    
     let targetDiv: any = null;
-
-    // Search for matching quality header
     $(".download-links-div h4").each((_, elem) => {
       const text = $(elem).text().trim();
       const searchTerms = decodeURIComponent(quality).split(" ").filter(s => s.length > 2);
-      
-      const isMatch = searchTerms.every(term => text.includes(term));
-      if (isMatch) targetDiv = $(elem).next(".downloads-btns-div");
+      if (searchTerms.every(term => text.includes(term))) targetDiv = $(elem).next(".downloads-btns-div");
     });
 
     const links: any[] = [];
@@ -33,9 +25,20 @@ export async function GET(request: Request) {
       targetDiv.find("a").each((_: any, el: any) => {
         const href = $(el).attr("href");
         if (href) {
-            if (href.includes("hubcloud")) links.push({ name: "N-Cloud", url: href, type: "ncloud" });
-            else if (href.includes("gdflix")) links.push({ name: "V-Cloud", url: href, type: "vcloud" });
-            else if (href.includes("drive.google")) links.push({ name: "G-Drive", url: href, type: "gdrive" });
+            let type = "unknown";
+            if (href.includes("hubcloud")) type = "ncloud";
+            else if (href.includes("gdflix")) type = "vcloud";
+            else if (href.includes("drive.google")) type = "gdrive";
+
+            if(type !== "unknown") {
+                links.push({ 
+                    name: type.toUpperCase(), 
+                    url: href, 
+                    type,
+                    // ✅ Slug for Next Step (N-Cloud)
+                    slug: encodeBase64(JSON.stringify({ url: href }))
+                });
+            }
         }
       });
     }
