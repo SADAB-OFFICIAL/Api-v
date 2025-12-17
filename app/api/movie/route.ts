@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
-import * as cheerio from "cheerio";
-import { fetchProxy, decodeBase64, encodeBase64 } from "@/lib/utils";
+import { fetchProxy, decodeBase64, parseHTML, encodeBase64 } from "@/lib/utils";
 
 const cleanTitle = (raw: string) => raw.split(/HQ|HDTC|Dual Audio|480p|720p|1080p|WEB-DL/i)[0].trim();
-const generateVlyxKey = (link: string) => encodeBase64(JSON.stringify({ link }));
+// Helper to create next API key
+const generateKey = (link: string) => encodeBase64(JSON.stringify({ link }));
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -13,19 +13,19 @@ export async function GET(request: Request) {
 
   let targetUrl = "";
   try {
-      // Decode the custom slug
       const decoded = decodeBase64(slug);
       const [path, baseUrl] = decoded.split("|||");
       targetUrl = `${baseUrl}/${path}/`;
-  } catch (e) { 
-      return NextResponse.json({ error: "Invalid Slug" }, { status: 400 }); 
-  }
+  } catch (e) { return NextResponse.json({ error: "Invalid Slug" }, { status: 400 }); }
 
   try {
-    const html = await fetchProxy(targetUrl);
-    if (!html) throw new Error("Source Down");
+    // ⚡ 24 Hours Cache
+    const html = await fetchProxy(targetUrl, 86400); 
+    if (!html) return NextResponse.json({ error: "Source Timeout (522)" }, { status: 503 });
 
-    const $ = cheerio.load(html);
+    const $ = parseHTML(html);
+    
+    // Basic Info
     const rawTitle = $("h1").first().text().trim();
     const title = cleanTitle(rawTitle);
     const poster = $(".post-thumbnail img").attr("src");
@@ -34,41 +34,46 @@ export async function GET(request: Request) {
     const episodeLinks: any[] = [];
     const batchLinks: any[] = [];
 
+    // Extract Links & Add Slugs
     $(".download-links-div h4").each((_, elem) => {
       const label = $(elem).text().trim();
       const linkDiv = $(elem).next(".downloads-btns-div");
+      
       const resMatch = label.match(/(\d{3,4}p)/);
       const res = resMatch ? resMatch[0] : "HD";
-      const isHEVC = label.toLowerCase().includes("hevc");
       
-      // Normal Links
+      // Normal Links (Single Movie / Episode List)
       const normalBtn = linkDiv.find("a.btn:not(.btn-zip)").attr("href");
       if (normalBtn) {
          const sizeMatch = label.match(/\[(\d+(\.\d+)?[GM]B)(\/E)?\]/);
          episodeLinks.push({ 
-             label, res, isHEVC, 
-             size: sizeMatch ? sizeMatch[1] : "N/A", 
-             url: normalBtn, 
-             vlyx_key: generateVlyxKey(normalBtn) 
+             label, res, 
+             size: sizeMatch ? sizeMatch[1] : "N/A",
+             url: normalBtn,
+             // ✅ Slug for Next API (VlyxDrive)
+             slug: generateKey(normalBtn) 
          });
       }
 
-      // Batch Links
+      // Batch Links (Series Zip)
       const zipBtn = linkDiv.find("a.btn-zip").attr("href");
       if (zipBtn) {
-         const zipText = linkDiv.find("a.btn-zip").text();
-         const sizeMatch = zipText.match(/\[(\d+(\.\d+)?[GM]B)\]/);
          batchLinks.push({ 
-             label: label.replace("Episode", "Season"), res, isHEVC, 
-             size: sizeMatch ? sizeMatch[1] : "Zip", 
-             url: zipBtn, 
-             vlyx_key: generateVlyxKey(zipBtn) 
+             label: label.replace("Episode", "Season"), res, 
+             size: "Zip",
+             url: zipBtn,
+             // ✅ Slug for Next API (VlyxDrive)
+             slug: generateKey(zipBtn)
          });
       }
     });
 
     const isSeries = batchLinks.length > 0 || title.includes("Season");
-    return NextResponse.json({ status: true, data: { title, poster, description, isSeries, episodeLinks, batchLinks } });
+
+    return NextResponse.json({ 
+        status: true, 
+        data: { title, poster, description, isSeries, episodeLinks, batchLinks } 
+    }, { headers: { 'Cache-Control': 'public, s-maxage=86400' } });
 
   } catch (error: any) {
     return NextResponse.json({ status: false, error: error.message }, { status: 500 });
