@@ -1,9 +1,16 @@
 import { NextResponse } from "next/server";
-import { fetchProxy, decodeBase64, parseHTML, encodeBase64 } from "@/lib/utils";
+import * as cheerio from "cheerio";
+import { fetchProxy, decodeBase64, encodeBase64 } from "@/lib/utils";
 
-const cleanTitle = (raw: string) => raw.split(/HQ|HDTC|Dual Audio|480p|720p|1080p|WEB-DL/i)[0].trim();
-// Helper to create next API key
-const generateKey = (link: string) => encodeBase64(JSON.stringify({ link }));
+// Clean Title Helper
+const cleanTitle = (raw: string) => {
+  return raw
+    .replace(/\(\d{4}\).*/, "") // Remove year and after
+    .replace(/Download|Full Movie|Dual Audio|Hindi|English|480p|720p|1080p|WEB-DL|Season \d+/gi, "")
+    .trim();
+};
+
+const generateVlyxKey = (link: string) => encodeBase64(JSON.stringify({ link }));
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -19,61 +26,73 @@ export async function GET(request: Request) {
   } catch (e) { return NextResponse.json({ error: "Invalid Slug" }, { status: 400 }); }
 
   try {
-    // ⚡ 24 Hours Cache
-    const html = await fetchProxy(targetUrl, 86400); 
-    if (!html) return NextResponse.json({ error: "Source Timeout (522)" }, { status: 503 });
+    const html = await fetchProxy(targetUrl, { next: { revalidate: 3600 } });
+    if (!html) throw new Error("Source Down");
 
-    const $ = parseHTML(html);
-    
-    // Basic Info
-    const rawTitle = $("h1").first().text().trim();
+    const $ = cheerio.load(html);
+
+    // 1. Title
+    const rawTitle = $("h1.page-title span.material-text").text().trim();
     const title = cleanTitle(rawTitle);
-    const poster = $(".post-thumbnail img").attr("src");
-    const description = $("h3:contains('Storyline')").next("p").text().trim();
 
+    // 2. Poster
+    const poster = $(".page-body img.aligncenter").first().attr("src");
+
+    // 3. Description (Storyline Logic)
+    let description = "";
+    $("h3").each((_, elem) => {
+        if ($(elem).text().includes("Storyline")) {
+            // MoviesDrive puts description in the next h5 tag
+            description = $(elem).next("h5").text().trim();
+            // Sometimes it's in p tag
+            if (!description) description = $(elem).next("p").text().trim();
+        }
+    });
+
+    // 4. Extract Links
     const episodeLinks: any[] = [];
     const batchLinks: any[] = [];
 
-    // Extract Links & Add Slugs
-    $(".download-links-div h4").each((_, elem) => {
-      const label = $(elem).text().trim();
-      const linkDiv = $(elem).next(".downloads-btns-div");
-      
-      const resMatch = label.match(/(\d{3,4}p)/);
-      const res = resMatch ? resMatch[0] : "HD";
-      
-      // Normal Links (Single Movie / Episode List)
-      const normalBtn = linkDiv.find("a.btn:not(.btn-zip)").attr("href");
-      if (normalBtn) {
-         const sizeMatch = label.match(/\[(\d+(\.\d+)?[GM]B)(\/E)?\]/);
-         episodeLinks.push({ 
-             label, res, 
-             size: sizeMatch ? sizeMatch[1] : "N/A",
-             url: normalBtn,
-             // ✅ Slug for Next API (VlyxDrive)
-             slug: generateKey(normalBtn) 
-         });
-      }
+    // MoviesDrive Structure: h5 tags contain links
+    $(".page-body h5").each((_, elem) => {
+        const text = $(elem).text().trim();
+        const linkTag = $(elem).find("a");
+        const url = linkTag.attr("href");
 
-      // Batch Links (Series Zip)
-      const zipBtn = linkDiv.find("a.btn-zip").attr("href");
-      if (zipBtn) {
-         batchLinks.push({ 
-             label: label.replace("Episode", "Season"), res, 
-             size: "Zip",
-             url: zipBtn,
-             // ✅ Slug for Next API (VlyxDrive)
-             slug: generateKey(zipBtn)
-         });
-      }
+        if (url && (text.includes("480p") || text.includes("720p") || text.includes("1080p") || text.includes("2160p"))) {
+            
+            const resMatch = text.match(/(\d{3,4}p)/);
+            const res = resMatch ? resMatch[0] : "HD";
+            const isHEVC = text.toLowerCase().includes("hevc") || text.includes("10Bit");
+            
+            // Size Extraction (e.g., [210MB/E] or [1.9GB])
+            const sizeMatch = text.match(/\[(\d+(\.\d+)?[GM]B)(\/E)?\]/);
+            const size = sizeMatch ? sizeMatch[1] : "N/A";
+
+            const linkObj = {
+                label: text,
+                res,
+                size,
+                isHEVC,
+                url,
+                vlyx_key: generateVlyxKey(url)
+            };
+
+            // Zip/Batch Detection
+            if (text.includes("Zip") || text.includes("Pack") || text.includes("Batch")) {
+                batchLinks.push(linkObj);
+            } else {
+                episodeLinks.push(linkObj);
+            }
+        }
     });
 
-    const isSeries = batchLinks.length > 0 || title.includes("Season");
+    const isSeries = batchLinks.length > 0 || rawTitle.includes("Season");
 
     return NextResponse.json({ 
         status: true, 
         data: { title, poster, description, isSeries, episodeLinks, batchLinks } 
-    }, { headers: { 'Cache-Control': 'public, s-maxage=86400' } });
+    }, { headers: { 'Cache-Control': 'public, s-maxage=3600' } });
 
   } catch (error: any) {
     return NextResponse.json({ status: false, error: error.message }, { status: 500 });
