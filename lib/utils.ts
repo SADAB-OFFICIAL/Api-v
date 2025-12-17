@@ -6,9 +6,10 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-// ✅ PROXY LIST (Agar ek fail ho to doosra use karein)
-export const PROXY_BASE = "https://proxy2.vlyx.workers.dev/?url=";
+// ✅ CONFIGURATION
+// Agar .nexus down hai to .vip ya .foo try karna
 export const SOURCE_DOMAIN = "https://movies4u.nexus"; 
+const SCRAPING_ANT_TOKEN = "9737b3c9d7bf449787e369f953f6c440"; // Tumhara API Key
 
 // Base64 Helpers
 export const encodeBase64 = (str: string) => {
@@ -21,54 +22,47 @@ export const decodeBase64 = (str: string) => {
   return decodeURIComponent(Array.prototype.map.call(atob(str), (c: string) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join(''));
 };
 
+// HTML Parser
 export const parseHTML = (html: string) => {
   return cheerio.load(html);
 };
 
-// 🔥 SMART FETCHER (Cloudflare Bypass Logic)
-export const fetchProxy = async (url: string, revalidate = 0) => {
+// 🔥 POWERFUL FETCHER (Using ScrapingAnt)
+export const fetchProxy = async (url: string, options: any = { cache: "no-store" }) => {
   try {
-    const targetUrl = `${PROXY_BASE}${encodeURIComponent(url)}`;
-    
-    // 1. Try Normal Proxy
-    let res = await fetch(targetUrl, {
-      next: { revalidate },
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-      }
+    // ScrapingAnt API URL Construction
+    // browser=false (Fast & Cheap), agar block ho to future mein =true kar dena
+    const targetUrl = `https://api.scrapingant.com/v2/general?url=${encodeURIComponent(url)}&x-api-key=${SCRAPING_ANT_TOKEN}&browser=false`;
+
+    const res = await fetch(targetUrl, {
+      ...options
     });
 
-    let textData = await res.text();
-
-    // Check if Cloudflare Blocked it (Just a moment... / 522 / 403)
-    const isBlocked = textData.includes("Just a moment...") || textData.includes("Enable JavaScript") || res.status === 522 || res.status === 403;
-
-    // 🚀 2. IF BLOCKED: Try Google Cache (The Jugaad)
-    if (isBlocked || !res.ok) {
-        console.log("⚠️ Cloudflare Blocked! Switching to Google Cache...");
-        const cacheUrl = `https://webcache.googleusercontent.com/search?q=cache:${url}&strip=1&vwsrc=0`;
-        
-        // Google Cache ko fetch karne ke liye bhi Proxy use karenge
-        const cacheRes = await fetch(`${PROXY_BASE}${encodeURIComponent(cacheUrl)}`, { cache: "no-store" });
-        if (cacheRes.ok) {
-            textData = await cacheRes.text();
-            // Google Header clean karo
-            textData = textData.replace(/<base href=".*?">/, ""); 
-        }
+    if (!res.ok) {
+        console.error(`ScrapingAnt Error: ${res.status}`);
+        return null;
     }
 
-    // 3. JSON vs HTML Handling
-    if (textData.trim().startsWith("{") && textData.trim().endsWith("}")) {
-        try {
+    const textData = await res.text();
+
+    // Kabhi kabhi ScrapingAnt JSON return karta hai content ke saath
+    try {
+        // Agar response JSON format mein hai to 'content' property nikalo
+        if (textData.trim().startsWith("{") && textData.trim().endsWith("}")) {
             const json = JSON.parse(textData);
-            return json.html || json.data || textData;
-        } catch (e) {}
+            // Agar API ne HTML 'content' field mein bheja hai
+            if (json.content) return json.content;
+            // Agar API ne error bheja hai
+            if (json.error) console.error("API Error:", json.error);
+        }
+    } catch (e) {
+        // Ignore JSON parse error, assume it's raw HTML
     }
 
-    return textData;
+    return textData; // Return Raw HTML
 
   } catch (error) {
-    console.error("Scraping Failed:", error);
+    console.error("Fetch Failed:", error);
     return null;
   }
 };
