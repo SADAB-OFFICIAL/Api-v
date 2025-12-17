@@ -1,16 +1,16 @@
 import { NextResponse } from "next/server";
-import * as cheerio from "cheerio";
-import { fetchProxy, SOURCE_DOMAIN, encodeBase64 } from "@/lib/utils";
+import { fetchProxy, SOURCE_DOMAIN, encodeBase64, parseHTML } from "@/lib/utils";
 
+// Clean unwanted text from titles
 const cleanTitle = (raw: string) => raw.split(/HQ|HDTC|Dual Audio|480p|720p|1080p|WEB-DL/i)[0].trim();
 
 export async function GET() {
   try {
-    // fetchProxy ab khud JSON/HTML handle karega from lib/utils
-    const html = await fetchProxy(SOURCE_DOMAIN);
-    if (!html) throw new Error("Failed to load source");
+    // ⚡ 86400 seconds = 24 Hours Cache
+    const html = await fetchProxy(SOURCE_DOMAIN, 86400); 
+    if (!html) return NextResponse.json({ status: false, error: "Source Down" }, { status: 503 });
 
-    const $ = cheerio.load(html);
+    const $ = parseHTML(html);
     const movies: any[] = [];
 
     $("article.post").each((_, element) => {
@@ -20,19 +20,23 @@ export async function GET() {
       
       if (rawTitle && link && poster) {
         const slugPart = link.replace(SOURCE_DOMAIN, "").replace(/\//g, "");
-        // Format: slug|||source_domain
-        const fullSlug = `${slugPart}|||${SOURCE_DOMAIN}`;
+        // Frontend ke liye ready-made SLUG
+        const fullSlug = encodeBase64(`${slugPart}|||${SOURCE_DOMAIN}`);
         
         movies.push({ 
             title: cleanTitle(rawTitle), 
             poster, 
-            slug: encodeBase64(fullSlug) // Encode here
+            slug: fullSlug 
         });
       }
     });
 
-    return NextResponse.json(movies);
-  } catch (error) {
-    return NextResponse.json({ error: "Failed to fetch home" }, { status: 500 });
+    // Cache-Control Header for Browser Caching
+    return NextResponse.json(
+        { status: true, data: movies }, 
+        { headers: { 'Cache-Control': 'public, s-maxage=86400, stale-while-revalidate=59' } }
+    );
+  } catch (error: any) {
+    return NextResponse.json({ status: false, error: error.message }, { status: 500 });
   }
 }
