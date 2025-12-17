@@ -28,11 +28,45 @@ export const parseHTML = (html: string) => {
 };
 
 // 🔥 UNIVERSAL FETCHER (Smart Logic)
-// Ye check karega ki Proxy ne JSON diya hai ya HTML, aur us hisaab se data return karega.
 export const fetchProxy = async (url: string, options: any = { cache: "no-store" }) => {
   try {
-    // URL construct karo
-    const targetUrl = `${PROXY_BASE}${url}`;
+    // URL construct karo (Encode karna zaroori hai taaki parameters break na ho)
+    const targetUrl = `${PROXY_BASE}${encodeURIComponent(url)}`;
 
     const res = await fetch(targetUrl, {
       ...options,
+      headers: {
+        // Fake Browser Headers taaki block na ho
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      }
+    });
+
+    if (!res.ok) throw new Error(`Proxy Error: ${res.status}`);
+
+    const contentType = res.headers.get("content-type");
+    const textData = await res.text();
+
+    // 1. Agar response proper JSON hai
+    if (contentType && contentType.includes("application/json")) {
+        try {
+            const json = JSON.parse(textData);
+            return json.html || json.data || textData; // HTML extract karo
+        } catch (e) { return textData; }
+    }
+    
+    // 2. Agar response string hai par JSON format mein hai (Fallback)
+    if (textData.trim().startsWith("{") && textData.trim().endsWith("}")) {
+        try {
+            const json = JSON.parse(textData);
+            if (json.html) return json.html;
+        } catch (e) {}
+    }
+
+    // 3. Agar direct HTML hai
+    return textData;
+
+  } catch (error) {
+    console.error("Scraping Failed:", error);
+    return null;
+  }
+};
