@@ -1,40 +1,47 @@
 import { NextResponse } from "next/server";
-import { fetchProxy, SOURCE_DOMAIN, encodeBase64, parseHTML } from "@/lib/utils";
+import * as cheerio from "cheerio";
+import { fetchProxy, SOURCE_DOMAIN, encodeBase64 } from "@/lib/utils";
 
-const cleanTitle = (raw: string) => raw.split(/HQ|HDTC|Dual Audio|480p|720p|1080p|WEB-DL/i)[0].trim();
+// Clean Title Helper (MoviesDrive titles are long)
+const cleanTitle = (raw: string) => {
+  return raw
+    .replace(/\(\d{4}\).*/, "") // Remove year and everything after
+    .replace(/Download|Full Movie|Dual Audio|Hindi|English|480p|720p|1080p|WEB-DL/gi, "")
+    .trim();
+};
 
 export async function GET() {
   try {
-    const html = await fetchProxy(SOURCE_DOMAIN, 3600);
-    if (!html) return NextResponse.json({ status: false, error: "Source Unavailable" }, { status: 503 });
+    // ⚡ 1 Hour Cache
+    const html = await fetchProxy(SOURCE_DOMAIN, { next: { revalidate: 3600 } });
+    
+    if (!html) return NextResponse.json({ error: "Source Down" }, { status: 503 });
 
-    const $ = parseHTML(html);
+    const $ = cheerio.load(html);
     const movies: any[] = [];
 
-    // Support both Normal and Google Cache Structure
-    $("article.post, div.post").each((_, element) => {
-      const titleTag = $(element).find(".entry-title a, h2 a");
-      const imgTag = $(element).find("figure img, img");
-      
-      const rawTitle = titleTag.text().trim();
-      const poster = imgTag.attr("src");
-      const link = titleTag.attr("href");
-      
-      if (rawTitle && link && poster) {
-        // Clean Link (Remove Google Cache Prefix if present)
-        let cleanLink = link;
-        if (link.includes("url?q=")) {
-            cleanLink = link.split("url?q=")[1].split("&")[0];
-        }
+    // ✅ NEW SELECTOR Logic for MoviesDrive
+    $("ul.recent-movies li.thumb").each((_, element) => {
+      const imgTag = $(element).find("figure img");
+      const linkTag = $(element).find("figure a");
+      const titleTag = $(element).find("figcaption p");
 
-        const slugPart = cleanLink.replace(SOURCE_DOMAIN, "").replace(/\//g, "");
-        const fullSlug = encodeBase64(`${slugPart}|||${SOURCE_DOMAIN}`);
-        
-        movies.push({ 
-            title: cleanTitle(rawTitle), 
-            poster, 
-            slug: fullSlug
-        });
+      if (imgTag && linkTag && titleTag) {
+        const rawTitle = titleTag.text().trim();
+        const poster = imgTag.attr("src");
+        const link = linkTag.attr("href");
+
+        if (link) {
+            // Slug Creation Logic
+            const slugPart = link.replace(SOURCE_DOMAIN, "").replace(/\//g, "");
+            const fullSlug = `${slugPart}|||${SOURCE_DOMAIN}`;
+            
+            movies.push({ 
+                title: rawTitle, // UI pe poora title dikhana behtar hai, clean client side pe kar lenge
+                poster, 
+                slug: encodeBase64(fullSlug)
+            });
+        }
       }
     });
 
