@@ -1,22 +1,20 @@
 import { NextResponse } from "next/server";
+import * as cheerio from "cheerio";
 import { fetchProxy, decodeBase64, parseHTML } from "@/lib/utils";
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const key = searchParams.get("key");
-
-  if (!key) return NextResponse.json({ error: "Missing Key" }, { status: 400 });
+  
+  let hubUrl = "";
+  try {
+      const decoded = JSON.parse(decodeBase64(key || ""));
+      hubUrl = decoded.url || decoded.link;
+  } catch(e) { return NextResponse.json({ error: "Invalid Key" }, { status: 400 }); }
 
   try {
-    // Decode Key
-    let hubUrl = "";
-    try {
-        const json = JSON.parse(decodeBase64(key));
-        hubUrl = json.url || json.link;
-    } catch(e) { hubUrl = decodeBase64(key); }
-
     // HOP 1: HubCloud
-    const html1 = await fetchProxy(hubUrl, 0);
+    const html1 = await fetchProxy(hubUrl, { cache: "no-store" });
     const $1 = parseHTML(html1 || "");
 
     let gamerLink = $1("a#download").attr("href");
@@ -26,10 +24,10 @@ export async function GET(request: Request) {
         });
     }
 
-    if (!gamerLink) return NextResponse.json({ error: "Link Not Found" }, { status: 404 });
+    if (!gamerLink) return NextResponse.json({ error: "Gamer Link Not Found" }, { status: 404 });
 
     // HOP 2: GamerXYT
-    const html2 = await fetchProxy(gamerLink, 0);
+    const html2 = await fetchProxy(gamerLink, { cache: "no-store" });
     const $2 = parseHTML(html2 || "");
 
     const finalLinks: any[] = [];
@@ -37,15 +35,17 @@ export async function GET(request: Request) {
         const text = $2(el).text().trim().toLowerCase();
         const href = $2(el).attr("href");
 
-        if (href && !href.startsWith("#") && !href.startsWith("javascript")) {
-            let type = "Link";
+        if (href && !href.startsWith("#")) {
+            let type = "unknown";
             if (text.includes("fslv2")) type = "FSLv2";
             else if (text.includes("fsl")) type = "FSL";
             else if (text.includes("pixel")) type = "Pixel";
             else if (text.includes("zipdisk")) type = "ZipDisk";
             else if (text.includes("10gbps")) type = "Fast-Server";
 
-            finalLinks.push({ name: $2(el).text().trim(), url: href, type });
+            if(type !== "unknown") {
+                finalLinks.push({ name: $2(el).text().trim(), url: href, type });
+            }
         }
     });
 
