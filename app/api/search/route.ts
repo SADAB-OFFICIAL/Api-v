@@ -2,20 +2,11 @@ import { NextResponse } from "next/server";
 import * as cheerio from "cheerio";
 import { fetchProxy, parseHTML, encodeBase64, decodeBase64 } from "@/lib/utils";
 
-// Helper to safely parse key
 const getUrlFromKey = (key: string) => {
   try {
-    const decodedStr = decodeBase64(key);
-    // Try parsing as JSON first
-    if (decodedStr.trim().startsWith("{")) {
-        const json = JSON.parse(decodedStr);
-        return json.link || json.url;
-    }
-    // If not JSON, return string as is
-    return decodedStr;
-  } catch (e) {
-    return null;
-  }
+    const d = decodeBase64(key);
+    return d.trim().startsWith("{") ? JSON.parse(d).link || JSON.parse(d).url : d;
+  } catch (e) { return null; }
 };
 
 const generateSlug = (url: string) => encodeBase64(JSON.stringify({ url }));
@@ -25,40 +16,28 @@ export async function GET(request: Request) {
   const key = searchParams.get("key");
   const directUrl = searchParams.get("url"); 
   
-  let targetUrl = "";
-  if (key) targetUrl = getUrlFromKey(key);
-  else if (directUrl) targetUrl = directUrl;
-
+  let targetUrl = key ? getUrlFromKey(key) : directUrl;
   if (!targetUrl) return NextResponse.json({ error: "Missing Key" }, { status: 400 });
 
   try {
-    // ⚡ 12 Hours Cache
     const html = await fetchProxy(targetUrl, { next: { revalidate: 43200 } }); 
-    if (!html) throw new Error("Failed to fetch page");
+    if (!html) throw new Error("Fetch Failed");
 
     const $ = parseHTML(html);
     const episodes: any[] = [];
-    
-    // Title Cleaning
     const title = $("h1").text().replace("Always Use Official Website", "").trim();
 
-    // --- STRATEGY 1: MDrive (h5 Headers) ---
-    // MoviesDrive structure: <h5>Ep01...</h5> <h5><a href="hubcloud">HubCloud</a></h5>
+    // --- LOGIC: MDrive vs M4uLinks ---
     if (targetUrl.includes("mdrive") || targetUrl.includes("moviesdrive")) {
+        // MDrive Logic
         let currentEpNum = "";
-        
         $("h5").each((_, elem) => {
             const text = $(elem).text().trim();
-            const linkTag = $(elem).find("a");
-            const href = linkTag.attr("href");
+            const href = $(elem).find("a").attr("href");
 
-            // 1. Detect Episode Number (e.g. "Ep01 - 2160p")
-            if (text.match(/Ep\s?\d+/i)) {
-                const match = text.match(/Ep\s?(\d+)/i);
-                if (match) currentEpNum = match[1];
-            }
+            const epMatch = text.match(/Ep\s?(\d+)/i);
+            if (epMatch) currentEpNum = epMatch[1];
 
-            // 2. Detect HubCloud Link associated with current episode
             if (href && (text.includes("HubCloud") || href.includes("hubcloud")) && currentEpNum) {
                 episodes.push({
                     epNum: currentEpNum,
@@ -68,28 +47,21 @@ export async function GET(request: Request) {
                 });
             }
         });
-    }
-
-    // --- STRATEGY 2: M4uLinks (h5 + div) ---
-    // M4uLinks structure: <h5>-:Episodes: 1:-</h5> <div class="downloads-btns-div">...</div>
-    else {
+    } else {
+        // M4uLinks Logic
         $(".download-links-div h5").each((_, elem) => {
-            const epTitle = $(elem).text().trim(); // e.g. "-:Episodes: 1:-"
-            const epNum = epTitle.match(/\d+/)?.[0] || "?";
+            const epNum = $(elem).text().match(/\d+/)?.[0] || "?";
             const btnDiv = $(elem).next(".downloads-btns-div");
             
-            // Extract HubCloud Link
-            let hubCloudLink = btnDiv.find("a[href*='hubcloud']").attr("href");
-            
-            // Fallback for messy HTML
-            if(!hubCloudLink) hubCloudLink = $(elem).find("a[href*='hubcloud']").attr("href");
+            let hubLink = btnDiv.find("a[href*='hubcloud']").attr("href");
+            if(!hubLink) hubLink = $(elem).find("a[href*='hubcloud']").attr("href");
 
-            if (hubCloudLink) {
+            if (hubLink) {
                 episodes.push({
                     epNum,
                     title: `Episode ${epNum}`,
-                    url: hubCloudLink,
-                    slug: generateSlug(hubCloudLink)
+                    url: hubLink,
+                    slug: generateSlug(hubLink)
                 });
             }
         });
